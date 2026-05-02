@@ -1,29 +1,25 @@
-export default function ConnectGooglePage({
-  searchParams,
-}: {
-  searchParams: { status?: string };
-}) {
-  const status = searchParams.status;
+type ConnectGooglePageProps = {
+  searchParams?: {
+    status?: string;
+  };
+};
+
+export default function ConnectGooglePage({ searchParams }: ConnectGooglePageProps) {
+  const status = searchParams?.status;
+
+  const message =
+    status === 'success'
+      ? 'Google アカウントとの接続が完了しました。Slack から URAKATA3 に話しかけて確認してみてください。'
+      : status === 'error'
+      ? 'Google 接続中にエラーが発生しました。もう一度お試しください。'
+      : 'Google アカウントとの接続状態を確認しています…';
 
   return (
-    <main>
-      <section>
-        <h1>Google 接続</h1>
-        <p className="muted">
-          Slack user ID をつけてアクセスしてください。例:
-          <code>/api/google/oauth/start?slackUserId=U12345678</code>
-        </p>
-        {status === 'success' ? (
-          <p className="ok">Google 接続が完了しました。</p>
-        ) : null}
-      </section>
-
-      <section>
-        <h2>メモ</h2>
-        <p>
-          本番ではこのページに Slack OAuth 後の本人確認や、接続済みスコープ表示を追加してください。
-        </p>
-      </section>
+    <main className="min-h-screen flex items-center justify-center px-4 py-8">
+      <div className="max-w-lg w-full rounded-lg border border-gray-200 bg-white/80 p-6 shadow-sm">
+        <h1 className="text-xl font-semibold mb-4">Google 接続</h1>
+        <p className="text-sm text-gray-700">{message}</p>
+      </div>
     </main>
   );
 }
