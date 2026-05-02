@@ -1,4 +1,4 @@
-import { z } from 'zod';
+/*import { z } from 'zod';
 import { tool } from 'ai';
 import { getGoogleClientForSlackUser, gmail, calendar } from '@/lib/google/tokens';
 import { writeAuditLog } from '@/lib/security/audit';
@@ -156,4 +156,7 @@ export function buildGoogleTools(slackUserId: string) {
       },
     }),
   };
-}
+}*/
+// Google tools for AI SDK を使う場合の実装をここに置く予定。
+// 現状のエージェントは手動で Gmail/Calendar を呼んでいるので、このファイルは未使用です。
+export {};

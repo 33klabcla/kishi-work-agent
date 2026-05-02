@@ -1,6 +1,5 @@
-import { google } from '@ai-sdk/google';
 import { generateText } from 'ai';
-import { env } from '@/lib/security/env';
+import { createGeminiModel } from '@/lib/ai/google-model';
 import type { SimpleCalendarEvent } from '@/lib/google/calendar';
 import type { SimpleGmailMessage } from '@/lib/google/gmail';
 
@@ -16,17 +15,13 @@ type AgentInput = {
 export async function runAgent(input: AgentInput) {
   const { prompt, context } = input;
 
-  const model = google(env.GEMINI_MODEL, {
-    apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
-  });
+  const model = createGeminiModel();
 
   const eventsSummary =
     context.todayEvents.length === 0
       ? '今日の予定はありません。'
       : context.todayEvents
-          .map(
-            (e) => `- ${e.start} ～ ${e.end}: ${e.summary}`,
-          )
+          .map((e) => `- ${e.start} ～ ${e.end}: ${e.summary}`)
           .join('\n');
 
   const messagesSummary =
@@ -34,7 +29,8 @@ export async function runAgent(input: AgentInput) {
       ? '最近のメール情報はありません。'
       : context.recentMessages
           .map(
-            (m) => `- ${m.date ?? ''} ${m.from ?? ''} / ${m.subject ?? ''}`,
+            (m) =>
+              `- ${m.date ?? ''} ${m.from ?? ''} / ${m.subject ?? ''}`,
           )
           .join('\n');
 

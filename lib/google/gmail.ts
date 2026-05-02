@@ -1,4 +1,4 @@
-import { google } from 'googleapis';
+import { google, gmail_v1 } from 'googleapis';
 import { getGoogleConnectionForSlackUser, buildGoogleAuthClientFromConnection } from './store';
 
 export type SimpleGmailMessage = {
@@ -10,8 +10,15 @@ export type SimpleGmailMessage = {
   date?: string;
 };
 
-function extractHeader(headers: { name?: string; value?: string }[] | undefined, name: string) {
-  return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value;
+function extractHeader(
+  headers: gmail_v1.Schema$MessagePartHeader[] | null | undefined,
+  name: string,
+) {
+  const found = headers?.find(
+    (h) => (h.name ?? '').toLowerCase() === name.toLowerCase(),
+  );
+
+  return found?.value ?? undefined;
 }
 
 export async function listRecentGmailMessages(
@@ -34,7 +41,7 @@ export async function listRecentGmailMessages(
   if (messages.length === 0) return [];
 
   const detailed = await Promise.all(
-    messages.map(async (m) => {
+    messages.map(async (m): Promise<SimpleGmailMessage | null> => {
       if (!m.id) return null;
 
       const res = await gmail.users.messages.get({
@@ -48,15 +55,17 @@ export async function listRecentGmailMessages(
       const headers = msg.payload?.headers ?? [];
 
       return {
-        id: msg.id!,
+        id: msg.id ?? '',
         threadId: msg.threadId ?? '',
         snippet: msg.snippet ?? '',
         from: extractHeader(headers, 'From'),
         subject: extractHeader(headers, 'Subject'),
         date: extractHeader(headers, 'Date'),
-      } as SimpleGmailMessage;
+      };
     }),
   );
 
-  return detailed.filter((m): m is SimpleGmailMessage => m !== null);
+  const filtered = detailed.filter((m) => m !== null);
+
+  return filtered as SimpleGmailMessage[];
 }
