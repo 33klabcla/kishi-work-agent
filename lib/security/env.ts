@@ -15,6 +15,14 @@ const envSchema = z.object({
   AGENT_ALLOWED_SLACK_USER_IDS: z.string().optional(),
   AGENT_ALLOWED_SLACK_CHANNEL_IDS: z.string().optional(),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+  // ---- GEAP (Vertex AI Reasoning Engine) ------------------------------------
+  // 3つすべて設定されている場合のみ GEAP が有効になる。
+  // 未設定の場合は Vercel AI SDK (generateText) にフォールバックする。
+  GEAP_PROJECT_NUMBER: z.string().optional(),  // 例: "6503033033"
+  GEAP_LOCATION: z.string().default('asia-northeast1'),
+  GEAP_RESOURCE_ID: z.string().optional(),     // 例: "5538750242503000064"
+  GCP_SERVICE_ACCOUNT_JSON: z.string().optional(), // サービスアカウントキー JSON 文字列
 });
 
 export const env = envSchema.parse({
@@ -32,6 +40,12 @@ export const env = envSchema.parse({
   AGENT_ALLOWED_SLACK_USER_IDS: process.env.AGENT_ALLOWED_SLACK_USER_IDS,
   AGENT_ALLOWED_SLACK_CHANNEL_IDS: process.env.AGENT_ALLOWED_SLACK_CHANNEL_IDS,
   NODE_ENV: process.env.NODE_ENV,
+
+  // GEAP
+  GEAP_PROJECT_NUMBER: process.env.GEAP_PROJECT_NUMBER,
+  GEAP_LOCATION: process.env.GEAP_LOCATION,
+  GEAP_RESOURCE_ID: process.env.GEAP_RESOURCE_ID,
+  GCP_SERVICE_ACCOUNT_JSON: process.env.GCP_SERVICE_ACCOUNT_JSON,
 });
 
 export const oauthScopes = env.GOOGLE_OAUTH_SCOPES.split(/\s+/).filter(Boolean);
