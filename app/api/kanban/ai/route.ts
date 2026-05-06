@@ -2,8 +2,9 @@
  * POST /api/kanban/ai
  * body: { boardId: string; message: string; userId?: string }
  *
- * GEAP (または Gemini) にカンバン操作の指示を送り、
+ * Gemini (Vercel AI SDK) でカンバン操作の指示を解釈し、
  * JSON コマンドを受け取って DB に適用する。
+ * GEAP / Cloud Run プロキシには依存しない。
  *
  * 返却: { reply: string; commands: KanbanCommand[]; board: Board }
  */
@@ -13,22 +14,30 @@ import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import { env } from '@/lib/security/env';
 import { z } from 'zod';
-import { queryGeapViaProxy, isProxyConfigured } from '@/lib/ai/geap-proxy';
 
+// ---------------------------------------------------------------------------
+// バリデーション
+// ---------------------------------------------------------------------------
 const bodySchema = z.object({
   boardId: z.string().min(1),
   message: z.string().min(1),
   userId: z.string().optional(),
 });
 
+// ---------------------------------------------------------------------------
+// コマンド型
+// ---------------------------------------------------------------------------
 type KanbanCommand =
-  | { name: 'move_task'; args: { taskId: string; toColumnId: string } }
+  | { name: 'move_task';   args: { taskId: string; toColumnId: string } }
   | { name: 'create_task'; args: { columnId: string; title: string; description?: string } }
   | { name: 'delete_task'; args: { taskId: string } }
   | { name: 'rename_task'; args: { taskId: string; title: string } }
   | { name: 'create_column'; args: { name: string } }
   | { name: 'noop'; args: Record<string, never> };
 
+// ---------------------------------------------------------------------------
+// ボード状態を system prompt に変換
+// ---------------------------------------------------------------------------
 async function buildSystemPrompt(boardId: string): Promise<string> {
   const board = await prisma.board.findUnique({
     where: { id: boardId },
@@ -55,22 +64,28 @@ async function buildSystemPrompt(boardId: string): Promise<string> {
     2,
   );
 
-  return `あなたはカンバンボード操作アシスタントです。
-現在のボード状態:
-${boardJson}
-
-ユーザーの指示を解釈し、以下の JSON 形式のみで返答してください。
-{
-  "reply": "<日本語の返答>",
-  "commands": [
-    { "name": "move_task", "args": { "taskId": "...", "toColumnId": "..." } }
-  ]
+  return [
+    'あなたはカンバンボード操作アシスタントです。',
+    '現在のボード状態:',
+    boardJson,
+    '',
+    'ユーザーの指示を解釈し、必ず以下の JSON 形式だけで返答してください。',
+    '{',
+    '  "reply": "<日本語の返答>",',
+    '  "commands": [',
+    '    { "name": "move_task", "args": { "taskId": "...", "toColumnId": "..." } }',
+    '  ]',
+    '}',
+    '',
+    '有効なコマンド名: move_task, create_task, delete_task, rename_task, create_column, noop',
+    '操作が不要な場合は commands を [] にしてください。',
+    'JSON 以外は絶対に出力しないでください。マークダウンコードブロックも不要です。',
+  ].join('\n');
 }
-有効なコマンド名: move_task, create_task, delete_task, rename_task, create_column, noop
-操作が不要な場合は commands を [] にしてください。
-JSON 以外は絶対に出力しないでください。`;
-}
 
+// ---------------------------------------------------------------------------
+// DB へコマンドを適用
+// ---------------------------------------------------------------------------
 async function applyCommands(commands: KanbanCommand[], boardId: string) {
   for (const cmd of commands) {
     if (cmd.name === 'move_task') {
@@ -111,60 +126,60 @@ async function applyCommands(commands: KanbanCommand[], boardId: string) {
         },
       });
     }
+    // noop: 何もしない
   }
 }
 
+// ---------------------------------------------------------------------------
+// Route Handler
+// ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   const parsed = bodySchema.safeParse(await req.json());
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { boardId, message, userId } = parsed.data;
+  const { boardId, message } = parsed.data;
 
-  const systemPrompt = await buildSystemPrompt(boardId);
-  const fullMessage = `${systemPrompt}\n\n【ユーザー指示】\n${message}`;
-
-  let rawText = '';
-
+  // system prompt にボード状態を埋め込む
+  let system: string;
   try {
-    if (isProxyConfigured()) {
-      // Cloud Run プロキシ経由
-      const result = await queryGeapViaProxy({
-        message: fullMessage,
-        userId: userId ?? 'kanban-user',
-        sessionId: `kanban-${boardId}`,
-      });
-      rawText = result.reply ?? JSON.stringify(result.raw);
-    } else {
-      // Vercel AI SDK (Gemini) フォールバック
-      const { text } = await generateText({
-        model: google(env.GEMINI_MODEL),
-        prompt: fullMessage,
-      });
-      rawText = text;
-    }
+    system = await buildSystemPrompt(boardId);
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 404 });
+  }
+
+  // Gemini 呼び出し
+  let rawText: string;
+  try {
+    const { text } = await generateText({
+      model: google(env.GEMINI_MODEL),
+      system,
+      prompt: message,
+    });
+    rawText = text.trim();
   } catch (e) {
     return NextResponse.json(
-      { error: 'AI call failed', detail: String(e) },
+      { error: 'Gemini call failed', detail: String(e) },
       { status: 502 },
     );
   }
 
-  // JSON 抽出（```json ... ``` ブロックにも対応）
-  const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/) ??
-    rawText.match(/(\{[\s\S]*\})/);
-  const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : rawText.trim();
+  // JSON 抽出（```json ... ``` ブロックにも念のため対応）
+  const fenced = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const jsonStr = fenced ? fenced[1].trim() : rawText;
 
-  let parsed2: { reply: string; commands: KanbanCommand[] };
+  let result: { reply: string; commands: KanbanCommand[] };
   try {
-    parsed2 = JSON.parse(jsonStr);
+    result = JSON.parse(jsonStr);
   } catch {
-    parsed2 = { reply: rawText, commands: [] };
+    // JSON パース失敗時はそのまま reply として返す
+    result = { reply: rawText, commands: [] };
   }
 
-  await applyCommands(parsed2.commands ?? [], boardId);
+  // コマンドを DB に適用
+  await applyCommands(result.commands ?? [], boardId);
 
-  // 最新ボード状態を返す
+  // 最新ボード状態を取得して返す
   const updatedBoard = await prisma.board.findUnique({
     where: { id: boardId },
     include: {
@@ -176,8 +191,8 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({
-    reply: parsed2.reply,
-    commands: parsed2.commands ?? [],
+    reply: result.reply ?? '完了しました',
+    commands: result.commands ?? [],
     board: updatedBoard,
   });
 }
