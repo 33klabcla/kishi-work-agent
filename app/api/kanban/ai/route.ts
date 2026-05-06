@@ -1,172 +1,183 @@
 /**
  * POST /api/kanban/ai
- * ユーザーの自然文を GEAP に送り、コマンドを解釈して DB を更新する。
+ * body: { boardId: string; message: string; userId?: string }
  *
- * Request body:
- *   { prompt: string }
+ * GEAP (または Gemini) にカンバン操作の指示を送り、
+ * JSON コマンドを受け取って DB に適用する。
  *
- * Response:
- *   { message: string, commands: KanbanCommand[], columns: Column[] }
+ * 返却: { reply: string; commands: KanbanCommand[]; board: Board }
  */
-import { NextResponse } from 'next/server';
-import { z } from 'zod';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
-import { queryGeap } from '@/lib/ai/geap';
-import { createGeminiModel } from '@/lib/ai/google-model';
 import { generateText } from 'ai';
+import { google } from '@ai-sdk/google';
 import { env } from '@/lib/security/env';
-import type { KanbanCommand, AiKanbanResponse } from '@/lib/kanban/types';
+import { z } from 'zod';
+import { queryGeapViaProxy, isProxyConfigured } from '@/lib/ai/geap-proxy';
 
 const bodySchema = z.object({
-  prompt: z.string().min(1),
+  boardId: z.string().min(1),
+  message: z.string().min(1),
+  userId: z.string().optional(),
 });
 
-// ---- ボード情報をテキストに変換（AI へのコンテキスト）----------------------
-async function buildBoardContext(): Promise<string> {
-  const columns = await prisma.column.findMany({
-    orderBy: { order: 'asc' },
-    include: { tasks: { orderBy: { order: 'asc' } } },
+type KanbanCommand =
+  | { name: 'move_task'; args: { taskId: string; toColumnId: string } }
+  | { name: 'create_task'; args: { columnId: string; title: string; description?: string } }
+  | { name: 'delete_task'; args: { taskId: string } }
+  | { name: 'rename_task'; args: { taskId: string; title: string } }
+  | { name: 'create_column'; args: { name: string } }
+  | { name: 'noop'; args: Record<string, never> };
+
+async function buildSystemPrompt(boardId: string): Promise<string> {
+  const board = await prisma.board.findUnique({
+    where: { id: boardId },
+    include: {
+      columns: {
+        orderBy: { order: 'asc' },
+        include: { tasks: { orderBy: { order: 'asc' } } },
+      },
+    },
   });
+  if (!board) throw new Error('Board not found');
 
-  return columns
-    .map(col => {
-      const taskLines =
-        col.tasks.length === 0
-          ? '  （タスクなし）'
-          : col.tasks.map(t => `  - [${t.id}] ${t.title}`).join('\n');
-      return `【${col.name}】(columnId: ${col.id})\n${taskLines}`;
-    })
-    .join('\n\n');
-}
+  const boardJson = JSON.stringify(
+    {
+      boardId: board.id,
+      boardName: board.name,
+      columns: board.columns.map(c => ({
+        columnId: c.id,
+        columnName: c.name,
+        tasks: c.tasks.map(t => ({ taskId: t.id, title: t.title })),
+      })),
+    },
+    null,
+    2,
+  );
 
-// ---- AI にコマンド JSON を生成させる ----------------------------------------
-async function askAi(prompt: string, boardContext: string): Promise<AiKanbanResponse> {
-  const systemPrompt = `
-あなたは Kanban ボードを操作する AI アシスタントです。
-以下のボード状態を踏まえて、ユーザーの指示を JSON コマンドに変換してください。
+  return `あなたはカンバンボード操作アシスタントです。
+現在のボード状態:
+${boardJson}
 
-必ず以下の JSON 形式だけを返してください（他のテキストは不要）:
+ユーザーの指示を解釈し、以下の JSON 形式のみで返答してください。
 {
-  "message": "ユーザーへの短い返答（日本語）",
+  "reply": "<日本語の返答>",
   "commands": [
-    // 以下から必要なものを配列で
-    { "name": "move_task",   "args": { "taskId": "...", "toColumnId": "..." } },
-    { "name": "create_task", "args": { "title": "...", "columnId": "...", "description": "..." } },
-    { "name": "update_task", "args": { "taskId": "...", "title": "...", "description": "..." } },
-    { "name": "delete_task", "args": { "taskId": "..." } }
+    { "name": "move_task", "args": { "taskId": "...", "toColumnId": "..." } }
   ]
 }
+有効なコマンド名: move_task, create_task, delete_task, rename_task, create_column, noop
+操作が不要な場合は commands を [] にしてください。
+JSON 以外は絶対に出力しないでください。`;
+}
 
-操作が不要な場合は commands を空配列にしてください。
-`;
-
-  const userMessage = `【現在のボード】\n${boardContext}\n\n【ユーザーの指示】\n${prompt}`;
-
-  let rawText: string;
-
-  if (env.GEAP_RESOURCE_ID) {
-    try {
-      const result = await queryGeap({
-        prompt: `${systemPrompt}\n\n${userMessage}`,
-        sessionId: `kanban-${Date.now()}`,
+async function applyCommands(commands: KanbanCommand[], boardId: string) {
+  for (const cmd of commands) {
+    if (cmd.name === 'move_task') {
+      await prisma.task.update({
+        where: { id: cmd.args.taskId },
+        data: { columnId: cmd.args.toColumnId },
       });
-      rawText = result.reply;
-    } catch (err) {
-      console.error('[kanban/ai] GEAP failed, falling back to AI SDK', err);
-      const model = createGeminiModel();
-      const { text } = await generateText({ model, system: systemPrompt, prompt: userMessage });
+    } else if (cmd.name === 'create_task') {
+      const max = await prisma.task.aggregate({
+        _max: { order: true },
+        where: { columnId: cmd.args.columnId },
+      });
+      await prisma.task.create({
+        data: {
+          columnId: cmd.args.columnId,
+          title: cmd.args.title,
+          description: cmd.args.description,
+          order: (max._max.order ?? -1) + 1,
+        },
+      });
+    } else if (cmd.name === 'delete_task') {
+      await prisma.task.delete({ where: { id: cmd.args.taskId } });
+    } else if (cmd.name === 'rename_task') {
+      await prisma.task.update({
+        where: { id: cmd.args.taskId },
+        data: { title: cmd.args.title },
+      });
+    } else if (cmd.name === 'create_column') {
+      const max = await prisma.column.aggregate({
+        _max: { order: true },
+        where: { boardId },
+      });
+      await prisma.column.create({
+        data: {
+          boardId,
+          name: cmd.args.name,
+          order: (max._max.order ?? -1) + 1,
+        },
+      });
+    }
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const parsed = bodySchema.safeParse(await req.json());
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+  const { boardId, message, userId } = parsed.data;
+
+  const systemPrompt = await buildSystemPrompt(boardId);
+  const fullMessage = `${systemPrompt}\n\n【ユーザー指示】\n${message}`;
+
+  let rawText = '';
+
+  try {
+    if (isProxyConfigured()) {
+      // Cloud Run プロキシ経由
+      const result = await queryGeapViaProxy({
+        message: fullMessage,
+        userId: userId ?? 'kanban-user',
+        sessionId: `kanban-${boardId}`,
+      });
+      rawText = result.reply ?? JSON.stringify(result.raw);
+    } else {
+      // Vercel AI SDK (Gemini) フォールバック
+      const { text } = await generateText({
+        model: google(env.GEMINI_MODEL),
+        prompt: fullMessage,
+      });
       rawText = text;
     }
-  } else {
-    const model = createGeminiModel();
-    const { text } = await generateText({ model, system: systemPrompt, prompt: userMessage });
-    rawText = text;
-  }
-
-  // JSON 部分だけ抽出
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { message: rawText, commands: [] };
-
-  try {
-    return JSON.parse(jsonMatch[0]) as AiKanbanResponse;
-  } catch {
-    return { message: rawText, commands: [] };
-  }
-}
-
-// ---- コマンドを DB に適用 ---------------------------------------------------
-async function executeCommands(commands: KanbanCommand[]): Promise<void> {
-  for (const cmd of commands) {
-    try {
-      switch (cmd.name) {
-        case 'move_task':
-          await prisma.task.update({
-            where: { id: cmd.args.taskId },
-            data: { columnId: cmd.args.toColumnId },
-          });
-          break;
-
-        case 'create_task': {
-          const max = await prisma.task.aggregate({
-            where: { columnId: cmd.args.columnId },
-            _max: { order: true },
-          });
-          await prisma.task.create({
-            data: {
-              title: cmd.args.title,
-              description: cmd.args.description,
-              columnId: cmd.args.columnId,
-              order: (max._max.order ?? 0) + 1,
-            },
-          });
-          break;
-        }
-
-        case 'update_task':
-          await prisma.task.update({
-            where: { id: cmd.args.taskId },
-            data: {
-              ...(cmd.args.title !== undefined && { title: cmd.args.title }),
-              ...(cmd.args.description !== undefined && { description: cmd.args.description }),
-            },
-          });
-          break;
-
-        case 'delete_task':
-          await prisma.task.delete({ where: { id: cmd.args.taskId } });
-          break;
-      }
-    } catch (err) {
-      console.error('[kanban/ai] command failed', cmd, err);
-    }
-  }
-}
-
-// ---- Route handler ---------------------------------------------------------
-export async function POST(req: Request) {
-  try {
-    const { prompt } = bodySchema.parse(await req.json());
-    const boardContext = await buildBoardContext();
-    const aiResponse = await askAi(prompt, boardContext);
-
-    await executeCommands(aiResponse.commands);
-
-    // 最新ボードを返す
-    const columns = await prisma.column.findMany({
-      orderBy: { order: 'asc' },
-      include: { tasks: { orderBy: { order: 'asc' } } },
-    });
-
-    return NextResponse.json({
-      message: aiResponse.message,
-      commands: aiResponse.commands,
-      columns,
-    });
-  } catch (err) {
-    console.error('/api/kanban/ai error', err);
+  } catch (e) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Unknown error' },
-      { status: 500 },
+      { error: 'AI call failed', detail: String(e) },
+      { status: 502 },
     );
   }
+
+  // JSON 抽出（```json ... ``` ブロックにも対応）
+  const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/) ??
+    rawText.match(/(\{[\s\S]*\})/);
+  const jsonStr = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : rawText.trim();
+
+  let parsed2: { reply: string; commands: KanbanCommand[] };
+  try {
+    parsed2 = JSON.parse(jsonStr);
+  } catch {
+    parsed2 = { reply: rawText, commands: [] };
+  }
+
+  await applyCommands(parsed2.commands ?? [], boardId);
+
+  // 最新ボード状態を返す
+  const updatedBoard = await prisma.board.findUnique({
+    where: { id: boardId },
+    include: {
+      columns: {
+        orderBy: { order: 'asc' },
+        include: { tasks: { orderBy: { order: 'asc' } } },
+      },
+    },
+  });
+
+  return NextResponse.json({
+    reply: parsed2.reply,
+    commands: parsed2.commands ?? [],
+    board: updatedBoard,
+  });
 }

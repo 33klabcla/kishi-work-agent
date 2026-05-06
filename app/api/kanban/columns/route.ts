@@ -1,32 +1,33 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
 import { z } from 'zod';
 
-// GET /api/kanban/columns — ボード全体（カラム + タスク）を返す
-export async function GET() {
-  const columns = await prisma.column.findMany({
-    orderBy: { order: 'asc' },
-    include: {
-      tasks: { orderBy: { order: 'asc' } },
-    },
-  });
-  return NextResponse.json({ columns });
-}
-
-// POST /api/kanban/columns — カラムを追加
-const createSchema = z.object({
-  name: z.string().min(1),
+const createColumnSchema = z.object({
+  boardId: z.string().min(1),
+  name: z.string().min(1).max(80),
   order: z.number().int().optional(),
 });
 
-export async function POST(req: Request) {
-  const body = createSchema.parse(await req.json());
-  const max = await prisma.column.aggregate({ _max: { order: true } });
+// POST /api/kanban/columns
+export async function POST(req: NextRequest) {
+  const body = createColumnSchema.safeParse(await req.json());
+  if (!body.success) {
+    return NextResponse.json({ error: body.error.flatten() }, { status: 400 });
+  }
+
+  const maxOrder = await prisma.column.aggregate({
+    _max: { order: true },
+    where: { boardId: body.data.boardId },
+  });
+
   const column = await prisma.column.create({
     data: {
-      name: body.name,
-      order: body.order ?? (max._max.order ?? 0) + 1,
+      boardId: body.data.boardId,
+      name: body.data.name,
+      order: body.data.order ?? (maxOrder._max.order ?? -1) + 1,
     },
+    include: { tasks: true },
   });
-  return NextResponse.json({ column }, { status: 201 });
+
+  return NextResponse.json(column, { status: 201 });
 }

@@ -17,12 +17,16 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
   // ---- GEAP (Vertex AI Reasoning Engine) ------------------------------------
-  // 3つすべて設定されている場合のみ GEAP が有効になる。
-  // 未設定の場合は Vercel AI SDK (generateText) にフォールバックする。
-  GEAP_PROJECT_NUMBER: z.string().optional(),  // 例: "6503033033"
+  GEAP_PROJECT_NUMBER: z.string().optional(),
   GEAP_LOCATION: z.string().default('asia-northeast1'),
-  GEAP_RESOURCE_ID: z.string().optional(),     // 例: "5538750242503000064"
-  GCP_SERVICE_ACCOUNT_JSON: z.string().optional(), // サービスアカウントキー JSON 文字列
+  GEAP_RESOURCE_ID: z.string().optional(),
+  GCP_SERVICE_ACCOUNT_JSON: z.string().optional(),
+
+  // ---- Cloud Run proxy (サービスアカウントキーなしで GEAP を呼ぶ) -----------
+  // GEAP_PROXY_URL が設定されている場合、直接 Vertex AI を叩く代わりに
+  // Cloud Run プロキシ経由で呼び出す。
+  GEAP_PROXY_URL: z.string().url().optional(),
+  GEAP_PROXY_API_KEY: z.string().optional(),
 });
 
 export const env = envSchema.parse({
@@ -46,6 +50,10 @@ export const env = envSchema.parse({
   GEAP_LOCATION: process.env.GEAP_LOCATION,
   GEAP_RESOURCE_ID: process.env.GEAP_RESOURCE_ID,
   GCP_SERVICE_ACCOUNT_JSON: process.env.GCP_SERVICE_ACCOUNT_JSON,
+
+  // Cloud Run proxy
+  GEAP_PROXY_URL: process.env.GEAP_PROXY_URL,
+  GEAP_PROXY_API_KEY: process.env.GEAP_PROXY_API_KEY,
 });
 
 export const oauthScopes = env.GOOGLE_OAUTH_SCOPES.split(/\s+/).filter(Boolean);

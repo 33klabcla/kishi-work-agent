@@ -81,25 +81,40 @@ model AuditLog {
 
 // ---- Kanban ----------------------------------------------------------------
 
+/// ボードごとにカラムをグループ化する。shareId で URL 共有可能。
+model Board {
+  id        String   @id @default(cuid())
+  name      String
+  shareId   String   @unique @default(cuid()) // /kanban?board=<shareId>
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  columns   Column[]
+}
+
 model Column {
   id        String   @id @default(cuid())
   name      String
   order     Int      @default(0)
+  boardId   String
+  board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tasks     Task[]
+
+  @@index([boardId, order])
 }
 
 model Task {
-  id          String     @id @default(cuid())
-  title       String
-  description String?
-  status      TaskStatus @default(TODO)
-  order       Int        @default(0)
-  columnId    String
-  column      Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id           String     @id @default(cuid())
+  title        String
+  description  String?    // プレーンテキスト（検索用）
+  lexicalJson  String?    // Lexical EditorState JSON
+  status       TaskStatus @default(TODO)
+  order        Int        @default(0)
+  columnId     String
+  column       Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@index([columnId, order])
 }
