@@ -20,6 +20,12 @@ enum ApprovalStatus {
   EXPIRED
 }
 
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
 model User {
   id                String             @id @default(cuid())
   slackUserId       String             @unique
@@ -71,4 +77,29 @@ model AuditLog {
   user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([eventType, createdAt])
+}
+
+// ---- Kanban ----------------------------------------------------------------
+
+model Column {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tasks     Task[]
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  title       String
+  description String?
+  status      TaskStatus @default(TODO)
+  order       Int        @default(0)
+  columnId    String
+  column      Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([columnId, order])
 }
