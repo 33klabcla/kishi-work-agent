@@ -8,6 +8,7 @@ export type SimpleGmailMessage = {
   from?: string;
   subject?: string;
   date?: string;
+  body?: string; // ← 追加：本文テキスト（最大 1500 字）
 };
 
 function extractHeader(
@@ -17,8 +18,30 @@ function extractHeader(
   const found = headers?.find(
     (h) => (h.name ?? '').toLowerCase() === name.toLowerCase(),
   );
-
   return found?.value ?? undefined;
+}
+
+function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
+  if (!payload) return '';
+
+  // multipart の場合は再帰で text/plain を探す
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      const text = extractBody(part);
+      if (text) return text;
+    }
+  }
+
+  if (
+    payload.mimeType === 'text/plain' &&
+    payload.body?.data
+  ) {
+    return Buffer.from(payload.body.data, 'base64url')
+      .toString('utf-8')
+      .slice(0, 1500); // 長すぎる本文は 1500 字で切る
+  }
+
+  return '';
 }
 
 export async function listRecentGmailMessages(
@@ -47,8 +70,7 @@ export async function listRecentGmailMessages(
       const res = await gmail.users.messages.get({
         userId: 'me',
         id: m.id,
-        format: 'metadata',
-        metadataHeaders: ['From', 'Subject', 'Date'],
+        format: 'full', // ← metadata → full に変更
       });
 
       const msg = res.data;
@@ -61,11 +83,10 @@ export async function listRecentGmailMessages(
         from: extractHeader(headers, 'From'),
         subject: extractHeader(headers, 'Subject'),
         date: extractHeader(headers, 'Date'),
+        body: extractBody(msg.payload ?? undefined),
       };
     }),
   );
 
-  const filtered = detailed.filter((m) => m !== null);
-
-  return filtered as SimpleGmailMessage[];
+  return detailed.filter((m): m is SimpleGmailMessage => m !== null);
 }

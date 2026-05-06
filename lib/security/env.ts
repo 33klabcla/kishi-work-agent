@@ -27,6 +27,10 @@ const envSchema = z.object({
   // Cloud Run プロキシ経由で呼び出す。
   GEAP_PROXY_URL: z.string().url().optional(),
   GEAP_PROXY_API_KEY: z.string().optional(),
+
+  NEXT_PUBLIC_APP_URL: z.string().url().optional(),
+
+
 });
 
 export const env = envSchema.parse({
@@ -54,6 +58,9 @@ export const env = envSchema.parse({
   // Cloud Run proxy
   GEAP_PROXY_URL: process.env.GEAP_PROXY_URL,
   GEAP_PROXY_API_KEY: process.env.GEAP_PROXY_API_KEY,
+
+  NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+  
 });
 
 export const oauthScopes = env.GOOGLE_OAUTH_SCOPES.split(/\s+/).filter(Boolean);
