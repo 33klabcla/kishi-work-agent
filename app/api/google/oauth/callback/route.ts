@@ -1,118 +1,145 @@
-import { NextResponse } from 'next/server';
-import { createGoogleOAuthClient, parseState } from '@/lib/google/oauth';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
-import { encryptString } from '@/lib/security/crypto';
-import { writeAuditLog } from '@/lib/security/audit';
 
-function decodeJwtPayload<T>(token: string): T {
-  const [, payload] = token.split('.');
-  if (!payload) {
-    throw new Error('Invalid ID token payload.');
-  }
-
-  const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-  const json = Buffer.from(padded, 'base64').toString('utf8');
-  return JSON.parse(json) as T;
-}
-
-type GoogleIdTokenPayload = {
-  sub: string;
-  email?: string;
-  email_verified?: boolean;
-  name?: string;
+type OAuthState = {
+  slackUserId: string;
+  redirectTo?: string;
 };
 
-export async function GET(req: Request) {
+type GoogleTokenResponse = {
+  access_token: string;
+  expires_in?: number;
+  refresh_token?: string;
+  scope?: string;
+  token_type?: string;
+};
+
+type GoogleUserInfo = {
+  email?: string;
+  name?: string;
+  picture?: string;
+};
+
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const code = url.searchParams.get('code');
+  const stateParam = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+
+  if (error) {
+    return NextResponse.json(
+      { ok: false, error: `Google OAuth error: ${error}` },
+      { status: 400 },
+    );
+  }
+
+  if (!code || !stateParam) {
+    return NextResponse.json(
+      { ok: false, error: 'Missing code or state.' },
+      { status: 400 },
+    );
+  }
+
+  let state: OAuthState;
+
   try {
-    const url = new URL(req.url);
-    const code = url.searchParams.get('code');
-    const error = url.searchParams.get('error');
-    const state = parseState(url.searchParams.get('state'));
+    state = JSON.parse(stateParam) as OAuthState;
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: 'Invalid state.' },
+      { status: 400 },
+    );
+  }
 
-    if (error) {
-      return NextResponse.json({ error }, { status: 400 });
+  try {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID ?? '',
+        client_secret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+        redirect_uri: process.env.GOOGLE_REDIRECT_URI ?? '',
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const text = await tokenRes.text();
+      return NextResponse.json(
+        { ok: false, error: `Failed to exchange token: ${text}` },
+        { status: 400 },
+      );
     }
 
-    if (!code || !state?.slackUserId) {
-      return NextResponse.json({ error: 'Missing code or state' }, { status: 400 });
+    const token = (await tokenRes.json()) as GoogleTokenResponse;
+
+    const profileRes = await fetch(
+      'https://www.googleapis.com/oauth2/v2/userinfo',
+      {
+        headers: {
+          Authorization: `Bearer ${token.access_token}`,
+        },
+      },
+    );
+
+    if (!profileRes.ok) {
+      const text = await profileRes.text();
+      return NextResponse.json(
+        { ok: false, error: `Failed to fetch Google profile: ${text}` },
+        { status: 400 },
+      );
     }
 
-    const client = createGoogleOAuthClient();
-    const { tokens } = await client.getToken(code);
+    const profile = (await profileRes.json()) as GoogleUserInfo;
 
-    if (!tokens.access_token) {
-      throw new Error('Missing access token.');
-    }
+    const expiresAt =
+      typeof token.expires_in === 'number'
+        ? new Date(Date.now() + token.expires_in * 1000)
+        : null;
 
-    if (!tokens.id_token) {
-      throw new Error('Missing id_token. Make sure openid email profile scopes are included.');
-    }
+    const scopes = token.scope
+      ? token.scope.split(' ').filter(Boolean)
+      : [];
 
-    const profile = decodeJwtPayload<GoogleIdTokenPayload>(tokens.id_token);
-
-    if (!profile.sub) {
-      throw new Error('Missing Google subject in id_token.');
-    }
-
-    const user = await prisma.user.upsert({
+    await prisma.user.upsert({
       where: { slackUserId: state.slackUserId },
       create: {
         slackUserId: state.slackUserId,
         email: profile.email,
-        displayName: profile.name,
+        name: profile.name,
+        image: profile.picture,
+        googleAccessToken: token.access_token,
+        googleRefreshToken: token.refresh_token,
+        googleTokenExpiry: expiresAt,
+        googleScopes: scopes,
       },
       update: {
         email: profile.email,
-        displayName: profile.name,
+        name: profile.name,
+        image: profile.picture,
+        googleAccessToken: token.access_token,
+        googleRefreshToken: token.refresh_token,
+        googleTokenExpiry: expiresAt,
+        googleScopes: scopes,
       },
     });
 
-    await prisma.googleConnection.upsert({
-      where: {
-        userId_googleSubject: {
-          userId: user.id,
-          googleSubject: profile.sub,
-        },
-      },
-      create: {
-        userId: user.id,
-        googleSubject: profile.sub,
-        googleEmail: profile.email ?? '',
-        grantedScopes: (tokens.scope ?? '').split(' ').filter(Boolean),
-        accessTokenEncrypted: encryptString(tokens.access_token),
-        refreshTokenEncrypted: tokens.refresh_token ? encryptString(tokens.refresh_token) : null,
-        expiryDate: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
-      },
-      update: {
-        googleEmail: profile.email ?? '',
-        grantedScopes: (tokens.scope ?? '').split(' ').filter(Boolean),
-        accessTokenEncrypted: encryptString(tokens.access_token),
-        refreshTokenEncrypted: tokens.refresh_token
-          ? encryptString(tokens.refresh_token)
-          : undefined,
-        expiryDate: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
-        status: 'ACTIVE',
-      },
-    });
+    const redirectTo = state.redirectTo || '/';
 
-    await writeAuditLog({
-      userId: user.id,
-      actor: 'google-oauth',
-      eventType: 'google.oauth.connected',
-      metadata: {
-        scopes: tokens.scope,
-        googleEmail: profile.email,
-        emailVerified: profile.email_verified,
-      },
-    });
-
-    return NextResponse.redirect(new URL('/connect-google?status=success', req.url));
+    return NextResponse.redirect(new URL(redirectTo, req.url));
   } catch (error) {
-    console.error('OAuth callback error:', error);
+    console.error('/api/google/oauth/callback error:', error);
+
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : 'Unknown OAuth callback error',
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Unknown Google OAuth callback error',
       },
       { status: 500 },
     );

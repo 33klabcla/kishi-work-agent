@@ -8,137 +8,35 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-enum GoogleConnectionStatus {
-  ACTIVE
-  REVOKED
-}
-
-enum ApprovalStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  EXPIRED
-}
-
-enum TaskStatus {
-  TODO
-  IN_PROGRESS
-  DONE
-}
-
 model User {
-  id                String             @id @default(cuid())
-  slackUserId       String             @unique
-  email             String?
-  displayName       String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  googleConnections GoogleConnection[]
-  auditLogs         AuditLog[]
-  approvalRequests  ApprovalRequest[]
-}
+  id                 String   @id @default(cuid())
+  slackUserId        String   @unique
+  email              String?  @unique
+  name               String?
+  image              String?
 
-model GoogleConnection {
-  id                    String                 @id @default(cuid())
-  userId                String
-  googleSubject         String
-  googleEmail           String
-  grantedScopes         String[]
-  accessTokenEncrypted  String
-  refreshTokenEncrypted String?
-  expiryDate            DateTime?
-  status                GoogleConnectionStatus @default(ACTIVE)
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  googleAccessToken  String?
+  googleRefreshToken String?
+  googleTokenExpiry  DateTime?
+  googleScopes       String[]
 
-  @@unique([userId, googleSubject])
-}
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-model ApprovalRequest {
-  id          String         @id @default(cuid())
-  userId      String
-  actionType  String
-  payloadJson String
-  status      ApprovalStatus @default(PENDING)
-  createdAt   DateTime       @default(now())
-  resolvedAt  DateTime?
-  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditLogs          AuditLog[]
 }
 
 model AuditLog {
-  id           String   @id @default(cuid())
-  userId       String?
-  eventType    String
-  actor        String
-  target       String?
-  metadataJson String
-  createdAt    DateTime @default(now())
-  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  @@index([eventType, createdAt])
-}
-
-// ---- Kanban ----------------------------------------------------------------
-
-/// ボードごとにカラムをグループ化する。shareId で URL 共有可能。
-model Board {
   id        String   @id @default(cuid())
-  name      String
-  shareId   String   @unique @default(cuid()) // /kanban?board=<shareId>
+  userId    String?
+  actor     String
+  eventType String
+  metadata  Json?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  columns   Column[]
-}
 
-model Column {
-  id        String   @id @default(cuid())
-  name      String
-  order     Int      @default(0)
-  boardId   String
-  board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tasks     Task[]
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  @@index([boardId, order])
-}
-
-model Task {
-  id          String    @id @default(cuid())
-  title       String
-  description String?   // プレーンテキスト（検索・プレビュー用）
-  lexicalJson String?   // Lexical EditorState JSON
-  status      TaskStatus @default(TODO)
-  order       Int        @default(0)
-  columnId    String
-  column      Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
-  taskTags    TaskTag[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  @@index([columnId, order])
-}
-
-/// タグマスタ（色・説明付き）
-model Tag {
-  id          String    @id @default(cuid())
-  name        String    @unique
-  color       String    @default("#6366f1") // hex
-  description String?
-  taskTags    TaskTag[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-}
-
-/// Task ↔ Tag の中間テーブル
-model TaskTag {
-  id     String @id @default(cuid())
-  taskId String
-  tagId  String
-  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
-
-  @@unique([taskId, tagId])
-  @@index([tagId])
+  @@index([userId])
+  @@index([eventType])
+  @@index([createdAt])
 }
