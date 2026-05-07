@@ -30,13 +30,14 @@ export default function KanbanLexicalEditor({
   const initialConfig: InitialConfigType = useMemo(
     () => ({
       namespace: 'KanbanEditor',
-      theme: {},
+      theme: {
+        paragraph: 'mb-1 text-[13.5px] leading-relaxed text-white/80',
+      },
       onError: (error: Error, _editor: LexicalEditor) => {
         console.error(error);
       },
       editorState: (editor) => {
         if (!initialJson) return;
-
         try {
           const parsed = editor.parseEditorState(initialJson);
           editor.setEditorState(parsed);
@@ -49,19 +50,23 @@ export default function KanbanLexicalEditor({
         }
       },
     }),
-    [initialJson],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
 
   return (
     <LexicalComposer initialConfig={initialConfig}>
-      <div className="relative min-h-[120px] rounded border border-gray-200">
+      <div className="relative min-h-[160px]">
         <RichTextPlugin
           contentEditable={
-            <ContentEditable className="min-h-[120px] p-2 text-sm focus:outline-none" />
+            <ContentEditable
+              className="min-h-[160px] w-full bg-transparent text-[13.5px] leading-relaxed
+                         text-white/80 placeholder:text-white/25 focus:outline-none"
+            />
           }
           placeholder={
-            <div className="pointer-events-none absolute top-2 left-2 text-sm text-gray-400">
-              詳細を入力…
+            <div className="pointer-events-none absolute top-0 left-0 text-[13.5px] text-white/25">
+              詳細メモを入力… (Shift+Enter で改行)
             </div>
           }
           ErrorBoundary={LexicalErrorBoundary}
@@ -71,11 +76,9 @@ export default function KanbanLexicalEditor({
           onChange={(editorState: EditorState) => {
             const json = JSON.stringify(editorState.toJSON());
             let plainText = '';
-
             editorState.read(() => {
               plainText = $getRoot().getTextContent();
             });
-
             onChange(json, plainText);
           }}
         />
