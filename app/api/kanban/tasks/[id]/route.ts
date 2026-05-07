@@ -10,19 +10,35 @@ const updateTaskSchema = z.object({
   lexicalJson: z.string().optional(),
   columnId: z.string().optional(),
   order: z.number().int().optional(),
+  tagIds: z.array(z.string()).optional(),
 });
 
-// PATCH /api/kanban/tasks/:id  — タイトル / 本文 / カラム移動
+// PATCH /api/kanban/tasks/:id
 export async function PATCH(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const body = updateTaskSchema.safeParse(await req.json());
   if (!body.success) {
     return NextResponse.json({ error: body.error.flatten() }, { status: 400 });
   }
+
+  const { tagIds, ...rest } = body.data;
+
   const task = await prisma.task.update({
     where: { id },
-    data: body.data,
+    data: {
+      ...rest,
+      ...(tagIds !== undefined && {
+        taskTags: {
+          deleteMany: {},
+          create: tagIds.map((tagId) => ({ tagId })),
+        },
+      }),
+    },
+    include: {
+      taskTags: { include: { tag: true } },
+    },
   });
+
   return NextResponse.json(task);
 }
 

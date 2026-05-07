@@ -7,7 +7,28 @@ const createTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().optional(),
   lexicalJson: z.string().optional(),
+  tagIds: z.array(z.string()).optional(),
 });
+
+// GET /api/kanban/tasks?boardId=xxx
+export async function GET(req: NextRequest) {
+  const boardId = req.nextUrl.searchParams.get('boardId');
+  if (!boardId) {
+    return NextResponse.json({ error: 'boardId required' }, { status: 400 });
+  }
+
+  const tasks = await prisma.task.findMany({
+    where: { column: { boardId } },
+    include: {
+      taskTags: {
+        include: { tag: true },
+      },
+    },
+    orderBy: { order: 'asc' },
+  });
+
+  return NextResponse.json(tasks);
+}
 
 // POST /api/kanban/tasks
 export async function POST(req: NextRequest) {
@@ -28,6 +49,14 @@ export async function POST(req: NextRequest) {
       description: body.data.description,
       lexicalJson: body.data.lexicalJson,
       order: (maxOrder._max.order ?? -1) + 1,
+      ...(body.data.tagIds?.length && {
+        taskTags: {
+          create: body.data.tagIds.map((tagId) => ({ tagId })),
+        },
+      }),
+    },
+    include: {
+      taskTags: { include: { tag: true } },
     },
   });
 

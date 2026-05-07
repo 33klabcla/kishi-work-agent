@@ -105,16 +105,40 @@ model Column {
 }
 
 model Task {
-  id           String     @id @default(cuid())
-  title        String
-  description  String?    // プレーンテキスト（検索用）
-  lexicalJson  String?    // Lexical EditorState JSON
-  status       TaskStatus @default(TODO)
-  order        Int        @default(0)
-  columnId     String
-  column       Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id          String    @id @default(cuid())
+  title       String
+  description String?   // プレーンテキスト（検索・プレビュー用）
+  lexicalJson String?   // Lexical EditorState JSON
+  status      TaskStatus @default(TODO)
+  order       Int        @default(0)
+  columnId    String
+  column      Column     @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  taskTags    TaskTag[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   @@index([columnId, order])
+}
+
+/// タグマスタ（色・説明付き）
+model Tag {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  color       String    @default("#6366f1") // hex
+  description String?
+  taskTags    TaskTag[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+/// Task ↔ Tag の中間テーブル
+model TaskTag {
+  id     String @id @default(cuid())
+  taskId String
+  tagId  String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, tagId])
+  @@index([tagId])
 }
